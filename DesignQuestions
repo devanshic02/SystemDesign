@@ -1,0 +1,81 @@
+
+What if we have different views( like price, quantity ,image) shown in sites like Amazon for same item based on color/specification/variation?
+
+AJAX
+=====
+( we can't have ajax every time in order to reduce latency-when we first render, 
+assuming that we are using the Spring framework,
+then the data in jsp is already filled in when it is dispacth, 
+and it is not compatible for compatibility Browsers that support javascript can’t only support 
+ajax-this should meet the requirement that the first render does not require ajax...)
+
+One consideration here is whether we introduce an object mapping at the web app layer,
+or directly Map the contents of the database to map or json. My personal preference is whether I should still have a DAO.
+Otherwise, we will introduce some maintenance problems in the web app layer-if we are using no sql,
+the schema definition will be nowhere to be found. Of course, if you use relational, basically the hibernate orm set, 
+you don't have to worry about this.
+
+So the process is probably to read an item from db during the first load, and then render to the template (jsp/ejs/...) and send it back to the user.
+
+The user changes the product color, the javascript code sends an ajax request to the server, the server reads the corresponding product, serializes it into json and sends it back to the browser. javascript process json and use whatever strange method (jQuery) to change the page content.
+
+If the browser does not support javascript, add the url parameter to load the new page directly.
+
+
+Map Reduce Basic Design
+=========================
+
+1. Divide the data into M small files (about 16M-64M per block), and then copy the map-reduce program to the workers and master
+2. Master manages workers to execute map and reduce. Taking map as an example, the master has a map workers pool and a map taskspool. Workers are found in the workers pool to execute map tasks. After the workers complete the tasks, they are recycled to the pool and wait for the next task to be assigned.
+3. The Map worker receives a file and a map function, starts to execute the map function, such as sort, and then stores the result in buffered memory, and writes it to the local disk (such as the beginning of the abcd letter) according to the reduce key classification rule at intervals. This is a rule). After completion, return the addresses of these files to the master
+4. After the Master confirms that all tasks in the map tasks pool have been executed, it establishes a reduce tasks pool and allocates machines from the reduce workers pool to complete the reduce tasks.
+5. Reduce worker receives the file list through RPC, and also the reduce function, sorts these files according to intermediate key (outer sort), and writes to the final file
+6. When all Reduce tasks are completed, the Master reports to the user that the tasks are completed
+
+Then we look at each one according to the points mentioned before:
+
+Implement : MapReduce system implementation
+Master:
+data structure:
+-Mutex process lock
+-string workers[]: workers RPC address
+-string files[]: input files
+-int nReduce: the number of reduce
+-int stats[]
+
+functions:
++Register: worker call register to report your status and store this worker to the worker pool
++newMaster: initial a master
++killWorker
++run: select the worker from the worker pool to execute the task
+
+Worker:
+data structure:
++map
++reduce
+-name
+-nTasks
+-nConcurrent
+functions:
++run
++register
++shutdown
+
+Performance :
+The most important thing to improve performance is to find the bottleneck of the system. For mapreduce, bottleneck is the speed bandwidth of RPC. Intermediate data is stored in local disk, but input and output are performed on GFS. The solution here is that because each file on GFS has 3 replicas, the Master will select the map worker based on the address of the 3 replicas. Ideally, the input processed by the map worker happens to be on this disk, which is equivalent to Local read data
+
+Faulttolerance:
+The master hangs up: change the master and do it again
+Worker hangs: The master pings the works every once in a while, if there is no response for a while, it hangs
+Mapworker: It may be that there is a problem with the replica, or there may be a problem with the worker, so change a replica and change it with a worker
+Reduceworker: If the task is already finished, restart it; if the task is not finished, then set the idle worker to idle and reselect a worker to execute the task
+
+Consistency:
+Itis a deterministic system. So the consistency should be good.
+If two workers make a map at the same time, two files will be generated, reduce read only one of them
+If two workers do a reduce at the same time, only one will be visible in GFS
+
+to sum up:
+MapReduce is suitable for offline big data analysis
+Not suitable for iterative tasks, because every time you write to read out to GFS
+Not suitable for small data and low latency systems
